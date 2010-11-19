@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+	<script type="text/javascript" charset="utf-8" src="/js/jquery.js"></script>
+	<script type="text/javascript" charset="utf-8" src="/js/jsdeferred.js"></script>
+	<title>PEEK console</title>
+	<style>
+
+	body {
+		margin: 0;
+		padding: 0
+	}
+
+	h1 {
+		font-size: 20px;
+		color: #222;
+		font-family: Helvetica, Arial, sans-serif;
+		margin: 0;
+		padding: 4px 12px;
+		font-weight: bold;
+		border-bottom: 1px solid #ccc;
+	}
+
+	#container {
+		margin: 10px;
+	}
+	.clearfix:after {
+		content: ".";
+		display: block;
+		height: 0;
+		clear: both;
+		visibility: hidden;
+	}
+
+	pre a {
+		text-decoration: none
+	}
+
+	pre a:hover {
+		text-decoration: underline
+	}
+
+	span.exception {
+		color: #080;
+		font-weight: bold;
+	}
+	span.domnode {
+		color: #008
+	}
+
+	#metrix {
+		display: none;
+		width: 220px;
+		height: 220px;
+		background-image:url('./metrix.png');
+	}
+
+	#applied-styles pre {
+		font-size: 12px;
+
+		border-top:1px solid #CCCCCC;
+		padding-top:4px;
+
+		width: 100%;
+	}
+	</style>
+	<script type="text/javascript" charset="utf-8">
+	//var host = 'http://10.32.1.177';
+	var host = '';
+	// <![CDATA[
+		function Peek(endpoint, opts) {
+			this.endpoint = endpoint
+			this.inspectorMode = false;
+			this.setupEventListners(opts);
+		}
+
+		Peek.prototype.setupEventListners = function (opts) {
+			var self = this;
+			if (opts.toggle_inspector) {
+				$('#'+opts.toggle_inspector).click( function () {
+					self.inspectorMode = !self.inspectorMode;
+					self.run( '$peekObject.activateInspector(' + (self.inspectorMode ? 'true': 'false') + ')' );
+				}, false);
+			}
+		}
+
+		Peek.prototype.send = function (method, params) {
+			var d = new Deferred();
+			var r = new XMLHttpRequest();
+			r.open(method, this.endpoint, true);
+			r.onreadystatechange = function (timeout) {
+				if (r.readyState == 4) {
+					if ( r.status >= 200 && r.status < 400 ) {
+							d.call(r);
+					} else {
+						d.fail();
+					}
+				}
+			}
+
+			var data = null;
+			if (method.match(/^get$/i)) {
+				// todo
+			} else {
+				if (params instanceof Object) {
+					data = jQuery.param(params);
+				} else {
+					data = params;
+				}
+			}
+			r.send(data);
+			return d;
+		}
+		Peek.prototype._evaluate = function (code) {
+			return this.send('post', code);
+		}
+
+		Peek.prototype.onsubmit = function (code) {
+			$('#metrix, #applied-styles').hide();
+			this.run(code);
+		}
+		Peek.prototype.run = function (code) {
+			code = code.replace(/[\r\n]/g, ' ').replace(/'/g, '\\\'');
+			var jscode =  "window.$peekObject.evaluate('" + code + "')";
+			var self = this;
+			this._evaluate(jscode).next( function (xhr) {
+				var result;
+				try {
+					var r = xhr.responseText;
+					result = JSON.parse(r);
+					self.$0 = result;
+					result = JSON.stringify(result, null, ' ');
+				} catch(e) {
+					result = r;
+				}
+				self.appendToStream(result);
+			} ).error( function (e) {
+				log(e);
+				self.appendToStream('(' + e.message + ')');
+			} );
+		}
+		Peek.prototype.showMetrix = function (elementInfo) {
+			["padding", "margin", "border"].map ( function (prefix) {
+				["top", "left", "right", "bottom"].map( function (suffix) {
+					var camelized = suffix.replace(/^./, function (s) {
+							return s.toUpperCase()
+					} )
+					var k = prefix + camelized;
+					if (prefix == 'border') {
+						k += "Width"
+					}
+					var n = parseInt(elementInfo[k], 10);
+					document.getElementById([prefix, suffix].join("-")).innerHTML = n
+				} )
+			} )
+			var x = parseInt(elementInfo.width, 10);
+			var y = parseInt(elementInfo.height, 10);
+			document.getElementById('element-size').innerHTML = [x, y].join(' x ')
+		}
+		Peek.prototype.showElementDetail = function (elementInfo) {
+			$('#metrix, #applied-styles').show();
+			this.showMetrix(elementInfo);
+			var container = document.getElementById("applied-styles")
+			container.innerHTML = '';
+			
+			console.log(elementInfo, elementInfo.styles);
+			window.d = elementInfo;
+
+			var styles = elementInfo.styles;
+			var nodes = styles.map( function (style) {
+				var def = style.definition.replace(/{/, '{\n' ).replace(/;/g, ';\n');
+				var pre = document.createElement("pre");
+				def = def.replace(/https?:\/\/[-\w./&?]+/, '<a href="$&">$&</a>' )
+				pre.innerHTML = def;
+				return pre;
+			} );
+			nodes.map( function(e) {
+				container.appendChild(e)
+			});
+		}
+		Peek.prototype.translateToHTML = function (d) {
+			if (d instanceof Object) {
+				if (d.resultType == 'domnode') {
+					var self = this;
+					var a = document.createElement('a')
+					a.setAttribute('href', '#')
+						a.addEventListener('click', function (ev) {
+							self.showElementDetail(d.value);
+							ev.preventDefault()
+						}, false);
+					var container = document.createElement('span')
+					container.className = d.resultType;
+					container.appendChild(document.createTextNode(d.value.text))
+					a.appendChild(container);
+					return a;
+				} else if (d.resultType == 'exception' ) {
+					var container = document.createElement('span')
+					container.className = d.resultType;
+					var text = d.name + "(line" + d.line + ") " + d.message;
+					container.appendChild(document.createTextNode(text))
+					return container;
+				} else if (d.resultType == 'node' ) {
+					var container = document.createElement('span')
+					container.className = d.resultType;
+					container.appendChild(document.createTextNode(d.value))
+					return container;
+				} else if (d.resultType == 'nodelist'  || d.resultType == 'array') {
+					var container = document.createElement('span')
+					container.appendChild(document.createTextNode('['));	
+					var nodes = d.value.map( this.translateToHTML ).map( function (node, n){
+						console.log(node, n);
+						if (n > 0) {
+							container.appendChild(document.createTextNode(', '));	
+						}
+						container.appendChild(node);	
+					} );
+					container.appendChild(document.createTextNode(']'));	
+					return container;
+				} else {
+					var container = document.createElement('span')
+					var text = JSON.stringify(d.value);
+					container.appendChild(document.createTextNode(text));	
+					return container;
+				}
+			} else {
+					var container = document.createElement('span')
+					container.className = 'atom'
+					container.appendChild(document.createTextNode(d))
+					return container;
+			}
+		}
+
+		Peek.prototype.appendToStream = function (d) {
+			var pre = document.createElement('pre');
+			var data = d;
+			try {
+				d = JSON.parse(data);
+			}catch(e) {
+			}
+
+			var node = this.translateToHTML(d,self);
+
+			pre.appendChild(node);
+
+			var resultconsole = document.getElementById('console');
+			resultconsole.appendChild(pre);
+			resultconsole.scrollTop = resultconsole.scrollHeight - resultconsole.clientHeight
+		}
+
+		Peek.prototype.goto = function (u) {
+
+			u = u.replace(/^\s*/, '').replace(/^\s*$/, '');
+			if (!u.match(/^https?:\/\//)) {
+				u = "http://" + u;
+			}
+			var self = this;
+			this._evaluate("document.location.href = '" + u + "'").error( function (e) {
+				self.appendToStream('(socket error)');
+			} );
+		}
+
+		Peek.HistoryBuffer = function (opts) {
+			this.opts = opts;
+			this.pos = -1;
+			this.content = [];
+		}
+		Peek.HistoryBuffer.prototype.add = function () {
+			var content = document.getElementById(this.opts.textarea).value;
+			content =	content.replace(/^\s*/, '').replace(/\s*$/, '');
+			if (content != this.content[this.pos]) {
+				this.content.push(content)
+				this.pos = this.content.length - 1;
+			}
+		}
+		Peek.HistoryBuffer.prototype.reset = function () {
+			this.pos = 0;
+		}
+		Peek.HistoryBuffer.prototype.older = function () {
+			if (this.pos > 0) {
+				this.pos--;
+			}
+			this.setHistoryContent();
+		}
+		Peek.HistoryBuffer.prototype.setHistoryContent = function () {
+			var v = this.content[this.pos];
+			if ( undefined !== v ) {
+				document.getElementById(this.opts.textarea).value = v;
+			}
+		}
+		Peek.HistoryBuffer.prototype.newer = function () {
+			if (this.pos < this.content.length - 1) {
+				this.pos++
+			}
+			this.setHistoryContent();
+		}
+
+	// ]]>
+	</script>
+	<script type="text/javascript" charset="utf-8">
+		var endpoint = '/';
+		window.peek = new Peek(endpoint, {
+			toggle_inspector: 'inspect',
+		});
+		window.command_history = new Peek.HistoryBuffer({textarea:'jscode'});
+
+		$(document).ready( function () {
+			$('#jscode').keydown(function (ev) {
+				if (ev.keyCode == 13 && ev.metaKey) {
+					command_history.add();
+					ev.target.form.submit()
+				} else if (ev.keyCode == 80 && ev.ctrlKey) {
+					// P
+					command_history.older();
+				} else if (ev.keyCode == 78 && ev.ctrlKey) {
+					// N
+					command_history.newer();
+				}
+			} );
+
+			$('#inspect').click(function (ev) {
+				peek.run( '$i()' );
+				ev.preventDefault();
+				ev.stopPropagation()
+			} )
+		} )
+		
+	</script>
+</head>
+<body>
+<h1>Peek Console</h1>
+<div id="container">
+<div class="clearfix">
+	<div style="float:left">
+		<form name="address" method="post" action="javascript:void(peek.goto(document.forms.address.URL.value))">
+			URL: <input id="URL" name="URL" text="" placeholder="http://" />
+			<input type="submit" name="" value="GO" />
+		</form>
+
+		<a id="inspect" href="#">inspect</a>
+
+		<form name="jsconsole" method="post" action="javascript:void(peek.onsubmit(document.forms.jsconsole.jscode.value))">
+			<textarea id="jscode" name="jscode" cols="80" rows="4" placeholder="M+Enter to evaluate"></textarea>
+			<div>
+			<input type="submit" value="evaluate on Remote" />
+			</div>
+		</form>
+	</div>
+	<div>
+	<style>
+	#console {
+		border: 1px solid #888;
+		height: 300px;
+		overflow: auto;
+	}
+
+	#console pre {
+		margin: 4px 0;
+		border-bottom: 1px solid #ccc;
+		padding: 3px;
+	}
+
+
+	</style>
+		<div id="console">
+			
+		</div>
+	</div>
+</div>
+<style>
+#metrix {
+	font-size: 12px;
+	text-align: center;
+}
+
+#metrix div {
+	position: relative;
+}
+
+#element-size {
+	top: 100px;
+}
+
+#metrix table td {
+	width: 20px;
+	height: 19px;
+	padding: 0;
+	border: 0
+}
+#metrix table td.c {
+	width: 94px;
+}
+#metrix table tr.c {
+	height: 92px;
+}
+
+</style>
+<div id="metrix" style="
+">
+<table border=0>
+	<tr><td><td><td><td class="c" id="margin-top">0<td><td><td></tr>
+	<tr><td><td><td><td class="c" id="border-top">0<td><td><td></tr>
+	<tr><td><td><td><td class="c" id="padding-top">0<td><td><td></tr>
+	<tr class="c">
+		<td id="margin-left">0<td id="border-left">0<td id="padding-left">0<td class="c" id="element-size"	>0 x 0</td>
+		<td id="padding-right">0<td id="border-right">0<td id="margin-right">0</td>
+	<tr><td><td><td><td class="c" id="padding-bottom">0<td><td><td></tr>
+	<tr><td><td><td><td class="c" id="border-bottom">0<td><td><td></tr>
+	<tr><td><td><td><td class="c" id="margin-bottom">0<td><td><td></tr>
+</table>
+</div>
+<div id="applied-styles">
+	
+</div>
+</div>
+
+
+</body>
+</html>
+</body>
+</html>
